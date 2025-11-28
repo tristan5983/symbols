@@ -3,8 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mobile Casino Simulation</title>
-    <!-- Load Tailwind CSS -->
+    <title>Mobile Casino Simulation (Local Storage)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
@@ -29,55 +28,54 @@
 <body class="min-h-screen p-4 sm:p-8 flex items-start justify-center">
 
     <div id="app-container" class="w-full max-w-lg mx-auto bg-gray-800 rounded-2xl shadow-2xl p-6 border-4 border-yellow-500/80">
-        <!-- Content will be rendered here by JavaScript -->
-    </div>
+        </div>
 
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        // Set Firestore log level to debug
-        setLogLevel('debug');
-
+    <script type="text/javascript">
+        // Since we removed Firebase, we use a standard script tag, not 'type="module"'
+        
         // --- Global State and Constants ---
+        const LOCAL_STORAGE_KEY = 'casino_balance_v1';
         const INITIAL_BALANCE = 500;
-        let state = {
-            userId: null,
-            balance: 0,
-            isLoading: true,
-            error: null,
-            isAuthReady: false,
-            currentGame: 'slots',
-            isGameActive: false, // Tracks spinning/rolling state across games
+        
+        // Function to load balance from Local Storage
+        const loadBalance = () => {
+            const storedBalance = localStorage.getItem(LOCAL_STORAGE_KEY);
+            return storedBalance !== null ? parseInt(storedBalance, 10) : INITIAL_BALANCE;
         };
 
-        // --- Global Firebase References ---
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-casino-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-        
-        let app, db, auth;
+        let state = {
+            userId: 'local_user_id', // Static ID for local simulation
+            balance: loadBalance(), // Load initial balance
+            isLoading: false,       // Set to false as no external loading is needed
+            error: null,
+            isAuthReady: true,      // Set to true as authentication is not used
+            currentGame: 'slots',
+            isGameActive: false, 
+            // Slots specific state
+            slotsReels: ['?', '?', '?'],
+            slotsMessage: 'Place your bet and spin!',
+            // Roulette specific state
+            rouletteResult: null,
+            rouletteMessage: 'Place your bet on Red or Black.',
+            // Dice specific state
+            diceRollResult: null,
+            diceMessage: 'Guess if the roll will be High (7+) or Low (6-).',
+        };
+
         const appContainer = document.getElementById('app-container');
 
         // --- Utility Functions ---
 
-        // Retry mechanism for API calls
-        const withRetry = async (fn, retries = 3, delay = 1000) => {
-            for (let i = 0; i < retries; i++) {
-                try {
-                    return await fn();
-                } catch (error) {
-                    if (i === retries - 1) throw error;
-                    await new Promise(resolve => setTimeout(resolve, delay * (2 ** i)));
-                }
-            }
-        };
-
         const updateState = (newState) => {
             Object.assign(state, newState);
+            // After updating state, save the balance and re-render the application
+            saveBalance();
             renderApp();
+        };
+
+        // Function to save balance to Local Storage
+        const saveBalance = () => {
+            localStorage.setItem(LOCAL_STORAGE_KEY, state.balance);
         };
 
         const renderLoading = () => `
@@ -91,46 +89,33 @@
         `;
 
         const renderError = (message) => `
-            <div class="text-center p-8 text-xl text-red-500">Error: ${message}</div>
+            <div class="text-center p-8 text-xl text-red-500">
+                <p>⚠️ Application Error</p>
+                <p class="text-sm mt-2">${message}</p>
+                <p class="text-xs mt-4 text-gray-400">Please try reloading the page if this persists.</p>
+            </div>
         `;
 
-        // Firestore Path and document ID for user funds
-        const getUserDataPath = (uid) => `/artifacts/${appId}/users/${uid}/casinoData`;
-        const getFundsDocRef = (uid) => doc(db, getUserDataPath(uid), 'funds');
-
-        // --- Transaction Handler ---
+        // --- Fund Handler (Replaces Firestore Transactions) ---
         const updateFunds = async (amount) => {
-            if (!state.userId || !db) {
-                console.error("Database or User ID not ready.");
-                return;
+            const newBalance = state.balance + amount;
+            
+            if (newBalance < 0) {
+                console.error("Transaction denied: Insufficient funds.");
+                // Since this is a local operation, we don't need a retry/transaction system, just a check
+                return false; 
             }
-
-            const fundsDocRef = getFundsDocRef(state.userId);
-
-            try {
-                await runTransaction(db, async (transaction) => {
-                    const sfDoc = await transaction.get(fundsDocRef);
-                    if (!sfDoc.exists()) {
-                        throw new Error("Document does not exist! Cannot update funds.");
-                    }
-                    const newBalance = sfDoc.data().balance + amount;
-                    if (newBalance < 0) {
-                        throw new Error("Transaction denied: Insufficient funds.");
-                    }
-                    transaction.update(fundsDocRef, { balance: newBalance });
-                });
-                console.log(`Transaction successful: ${amount > 0 ? '+' : ''}${amount}`);
-
-            } catch (e) {
-                console.error("Transaction failed:", e.message);
-                // Let the onSnapshot listener handle the state update
-            }
+            
+            // Update the state immediately
+            updateState({ balance: newBalance });
+            console.log(`Fund update successful: ${amount > 0 ? '+' : ''}${amount}. New balance: ${newBalance}`);
+            return true;
         };
+
 
         // --- Game Rendering Functions (HTML Templates) ---
 
         const renderSlotMachine = () => {
-            const symbols = ['🍒', '🍋', '🔔', '⭐', '💎'];
             const BET_AMOUNT = 10;
             const reels = state.slotsReels || ['?', '?', '?'];
             const message = state.slotsMessage || 'Place your bet and spin!';
@@ -158,15 +143,23 @@
         };
 
         const DiceFace = (value) => {
+            // Helper function to render a single die face using dots
+            const dots = {
+                1: [5],
+                2: [1, 9],
+                3: [1, 5, 9],
+                4: [1, 3, 7, 9],
+                5: [1, 3, 5, 7, 9],
+                6: [1, 3, 4, 6, 7, 9]
+            };
+            
             return `
-                <div class="w-12 h-12 bg-white rounded-lg shadow-xl flex flex-wrap p-1 transform transition-all duration-500 ease-out">
-                    <div class="dot w-1/3 h-1/3 flex items-center justify-center ${value === 1 || value === 3 || value === 5 ? '' : 'hidden'}"><div class="w-2 h-2 bg-gray-900 rounded-full"></div></div>
-                    <div class="dot w-1/3 h-1/3 flex items-center justify-center ${value === 4 || value === 5 || value === 6 ? '' : 'hidden'}"><div class="w-2 h-2 bg-gray-900 rounded-full"></div></div>
-                    <div class="dot w-1/3 h-1/3 flex items-center justify-center ${value === 6 ? '' : 'hidden'}"><div class="w-2 h-2 bg-gray-900 rounded-full"></div></div>
-                    <div class="dot w-1/3 h-1/3 flex items-center justify-center ${value === 6 ? '' : 'hidden'}"><div class="w-2 h-2 bg-gray-900 rounded-full"></div></div>
-                    <div class="dot w-1/3 h-1/3 flex items-center justify-center ${value === 1 || value === 3 || value === 5 ? '' : 'hidden'}"><div class="w-2 h-2 bg-gray-900 rounded-full"></div></div>
-                    <div class="dot w-1/3 h-1/3 flex items-center justify-center ${value === 6 ? '' : 'hidden'}"><div class="w-2 h-2 bg-gray-900 rounded-full"></div></div>
-                    <div class="dot w-1/3 h-1/3 flex items-center justify-center ${value === 4 || value === 5 || value === 6 ? '' : 'hidden'}"><div class="w-2 h-2 bg-gray-900 rounded-full"></div></div>
+                <div class="w-12 h-12 bg-white rounded-lg shadow-xl grid grid-cols-3 grid-rows-3 p-1">
+                    ${[...Array(9)].map((_, i) => `
+                        <div class="dot flex items-center justify-center">
+                            ${dots[value] && dots[value].includes(i + 1) ? '<div class="w-2 h-2 bg-gray-900 rounded-full"></div>' : ''}
+                        </div>
+                    `).join('')}
                 </div>
             `;
         };
@@ -180,7 +173,7 @@
                 <div id="dice-roll" class="flex flex-col items-center p-4 bg-gray-900/50 rounded-xl shadow-inner border border-yellow-500/30">
                     <h2 class="text-3xl font-bold mb-4 text-yellow-400">Hi-Low Dice (Bet: ${BET_AMOUNT})</h2>
 
-                    <div class="flex space-x-4 mb-4 h-12">
+                    <div class="flex space-x-4 mb-4 h-12 justify-center items-center">
                         ${rollResult ? `${DiceFace(rollResult.die1)} ${DiceFace(rollResult.die2)}` : ''}
                         ${state.isGameActive ? '<div class="text-2xl text-white animate-pulse">ROLLING...</div>' : ''}
                     </div>
@@ -219,19 +212,21 @@
 
                     <div class="w-full mb-4 text-center">
                         <p id="roulette-message" class="text-lg font-semibold h-6 text-white mb-2">${message}</p>
-                        ${result ? `
-                            <div class="p-4 inline-block text-3xl font-extrabold rounded-full w-16 h-16 flex items-center justify-center transition-all duration-500 ${result.color === 'red' ? 'bg-red-700' : result.color === 'black' ? 'bg-gray-800' : 'bg-green-700'} shadow-2xl">
-                                ${result.text}
-                            </div>
-                        ` : ''}
-                        ${state.isGameActive ? `
-                            <div class="w-16 h-16 inline-block">
-                                <svg class="animate-spin w-full h-full text-yellow-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                </svg>
-                            </div>
-                        ` : ''}
+                        <div class="h-16 flex items-center justify-center">
+                            ${result ? `
+                                <div class="p-4 inline-block text-3xl font-extrabold rounded-full w-16 h-16 flex items-center justify-center transition-all duration-500 ${result.color === 'red' ? 'bg-red-700' : result.color === 'black' ? 'bg-gray-800' : 'bg-green-700'} shadow-2xl">
+                                    ${result.text}
+                                </div>
+                            ` : ''}
+                            ${state.isGameActive ? `
+                                <div class="w-16 h-16 inline-block">
+                                    <svg class="animate-spin w-full h-full text-yellow-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                </div>
+                            ` : ''}
+                        </div>
                     </div>
 
                     <div class="flex space-x-4 w-full">
@@ -267,12 +262,16 @@
             }
         
             updateState({ isGameActive: true, slotsMessage: 'Spinning...', slotsReels: ['?', '?', '?'] });
-            updateFunds(-BET_AMOUNT); // Deduct bet immediately
+            
+            // Deduct bet immediately (Local Storage update handled by updateState)
+            updateFunds(-BET_AMOUNT); 
         
             let spinCount = 0;
             const interval = setInterval(() => {
                 const newReels = symbols.map(() => symbols[Math.floor(Math.random() * symbols.length)]);
-                updateState({ slotsReels: newReels }); // Update reels quickly for animation
+                // Only update the reels in the state to drive the animation
+                Object.assign(state, { slotsReels: newReels });
+                renderApp(); 
                 spinCount++;
         
                 if (spinCount > 20) {
@@ -409,7 +408,7 @@
                     <p class="mt-2 text-xl font-bold text-white">
                         Balance: <span class="text-green-400">$${state.balance}</span>
                     </p>
-                    ${state.userId ? `<p class="mt-1 text-xs text-gray-400">User ID: ${state.userId}</p>` : ''}
+                    ${state.userId ? `<p class="mt-1 text-xs text-gray-400">User ID: ${state.userId} (Local Simulation)</p>` : ''}
                 </header>
                 <nav class="flex justify-between space-x-2 mb-8 p-2 bg-gray-900 rounded-lg shadow-inner">
                     ${renderGameButton('Slots')}
@@ -440,7 +439,7 @@
 
             const footer = `
                 <footer class="mt-8 pt-4 border-t border-gray-700 text-center text-xs text-gray-500">
-                    <p>Simulation Game - Funds are not real currency.</p>
+                    <p>Simulation Game - Funds are not real currency. Balance saved locally in browser storage.</p>
                 </footer>
             `;
 
@@ -465,78 +464,10 @@
         };
 
 
-        // --- Initialization ---
+        // --- Application Start ---
 
-        const initializeFirebase = async () => {
-            if (Object.keys(firebaseConfig).length === 0) {
-                updateState({ error: "Firebase not initialized. Check your configuration.", isLoading: false });
-                return;
-            }
-
-            try {
-                app = initializeApp(firebaseConfig);
-                db = getFirestore(app);
-                auth = getAuth(app);
-            } catch (e) {
-                updateState({ error: "Firebase initialization failed.", isLoading: false });
-                console.error("Firebase initialization failed:", e);
-                return;
-            }
-
-            onAuthStateChanged(auth, async (user) => {
-                let uid = user?.uid;
-
-                if (!user) {
-                    try {
-                        if (initialAuthToken) {
-                            const credential = await withRetry(() => signInWithCustomToken(auth, initialAuthToken));
-                            uid = credential.user.uid;
-                        } else {
-                            const credential = await withRetry(() => signInAnonymously(auth));
-                            uid = credential.user.uid;
-                        }
-                    } catch (e) {
-                        console.error("Authentication failed:", e);
-                        updateState({ error: "Failed to sign in. Cannot access user data.", isLoading: false });
-                        return;
-                    }
-                }
-
-                if (uid) {
-                    updateState({ userId: uid, isAuthReady: true });
-                    setupFirestoreListener(uid);
-                }
-            });
-        };
-
-        const setupFirestoreListener = (uid) => {
-            const fundsDocRef = getFundsDocRef(uid);
-
-            onSnapshot(fundsDocRef, async (docSnap) => {
-                if (docSnap.exists()) {
-                    // Data exists, update balance
-                    const data = docSnap.data();
-                    updateState({ balance: data.balance, isLoading: false, error: null });
-                } else {
-                    // User's fund document doesn't exist, create it.
-                    console.log("User fund document not found. Initializing balance.");
-                    try {
-                        await setDoc(fundsDocRef, { balance: INITIAL_BALANCE, userId: uid });
-                        updateState({ balance: INITIAL_BALANCE, isLoading: false, error: null });
-                    } catch (e) {
-                        console.error("Failed to initialize balance:", e);
-                        updateState({ error: "Failed to initialize user funds. Check Security Rules.", isLoading: false });
-                    }
-                }
-            }, (e) => {
-                console.error("Firestore subscription error:", e);
-                updateState({ error: "Failed to connect to funds database. Check console for security rule errors.", isLoading: false });
-            });
-        };
-
-        // Start the application lifecycle
-        initializeFirebase();
-        renderApp(); // Initial render of loading state
+        // Since all data is local, we just call the initial render.
+        renderApp(); 
 
     </script>
 </body>
